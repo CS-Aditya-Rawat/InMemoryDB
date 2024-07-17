@@ -1,15 +1,19 @@
 #include <arpa/inet.h>
-#include <array>
-#include <cassert>
-#include <cstdint>
+#include <assert.h>
+#include <stdint.h>
 #include <errno.h>
+#include <cstdlib>
 #include <iostream>
 #include <netinet/ip.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include <string.h>
+#include <vector>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <string>
+#include <cassert>
 
 constexpr uint32_t k_max_msg = 4096;
 
@@ -48,15 +52,28 @@ int32_t write_all(int fd, const char *buf, size_t n) {
   return 0;
 }
 
-int32_t send_req(int fd, const std::string& message) {
-  uint32_t len = static_cast<uint32_t>(message.size());
+int32_t send_req(int fd, std::vector<std::string>& cmd) {
+  uint32_t len = 4;
+  for (const std::string &s: cmd){
+    len += 4 + s.size();
+  }
   if (len > k_max_msg) {
     return -1;
   }
 
   char wbuf[4 + k_max_msg];
   memcpy(wbuf, &len, 4); // assume little endian
-  memcpy(&wbuf[4], message.data(), len);
+
+  uint32_t n = cmd.size();
+  memcpy(&wbuf[4], &n, 4); // writing nstr
+  size_t cur = 8;
+  for(const std::string &s: cmd){
+    uint32_t p = (uint32_t)s.size();
+    memcpy(&wbuf[cur], &p, 4);
+    memcpy(&wbuf[cur + 4], s.data(), s.size());
+    cur += 4 + s.size();
+  }
+
   return write_all(fd, wbuf, 4 + len);
 }
 
@@ -69,7 +86,6 @@ int32_t read_res(int fd) {
     if (errno == 0) {
       msg("EOF");
     } else {
-      std::cout<<"ERROR HERE"<<'\n';
       msg("read() error");
     }
     return err;
@@ -87,12 +103,18 @@ int32_t read_res(int fd) {
     msg("read() error");
     return err;
   }
-  rbuf[4 + len] = '\0';
-  std::cout << "Server says: " << &rbuf[4]<<"\n";
+  // print the result
+  uint32_t rescode = 0;
+  if (len < 4){
+    msg("bad response");
+    return -1;
+  }
+  memcpy(&rescode, &rbuf[4], 4);
+  std::cout << "Server says: [" << rescode <<"]"<<"\n";
   return 0;
 }
 
-int main() {
+int main(int argc, char *argv[]) {
   try {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) {
@@ -108,17 +130,13 @@ int main() {
       close(fd);
       die("connect()");
     }
-    // multiple pipelined requests
-    std::array<std::string, 4> query_list = {"hello", "see", "you", "again"};
+    std::vector<std::string> cmd;
+    for(int i=1; i<argc; ++i){
+      cmd.push_back(argv[i]);
+    }
+    if (send_req(fd, cmd)) close(fd);
+    if (read_res(fd)) close(fd);
 
-    for (const auto &query : query_list) {
-      send_req(fd, query);
-    }
-    for (const auto &query : query_list) {
-      int32_t response = read_res(fd);
-      std::cout << "Response: " << response << std::endl;
-    }
-    close(fd);
   } catch (const std::exception &e) {
     std::cerr << "Error: " << e.what() << std::endl;
     return 1;
